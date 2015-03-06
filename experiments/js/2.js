@@ -19,8 +19,14 @@ var startButton;
 /** The number of milliseconds to wait between ticks. */
 var delay;
 
+/** Whether or not to use path reinforcement, as opposed to distance. */
+var pathReinforcement;
+
 /** The tick timeout. */
 var tickTimeout;
+
+/** The value of the clock. */
+var clock;
 
 /** The size of the grid cells. */
 var CELL_SIZE = 15;
@@ -46,6 +52,9 @@ var wallStride;
 /** The state of the agent. */
 var agent;
 
+/** The state of the goal. */
+var goal;
+
 
 /**
  * Constructor for adjacent sections.
@@ -60,24 +69,78 @@ function Adjacency (x, y, flag, section)
 
 
 /**
- * Constructs the agent.
+ * Constructs the goal.
  */
-function Agent ()
+function Goal ()
 {
     // position randomly
     this.x = Math.floor(Math.random() * cellWidth);
     this.y = Math.floor(Math.random() * cellHeight);
+}
+
+/**
+ * Renders the goal.
+ */
+Goal.prototype.render = function ()
+{
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();    
+    ctx.moveTo((this.x + 0.5) * CELL_SIZE, (this.y + 0.25) * CELL_SIZE);
+    ctx.lineTo((this.x + 0.5) * CELL_SIZE, (this.y + 0.75) * CELL_SIZE);
+    ctx.moveTo((this.x + 0.25) * CELL_SIZE, (this.y + 0.5) * CELL_SIZE);
+    ctx.lineTo((this.x + 0.75) * CELL_SIZE, (this.y + 0.5) * CELL_SIZE);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+};
+
+
+/**
+ * Constructs a memory node.
+ */
+function MemoryNode ()
+{
+    this.lastVisited = 0;
+    this.rewardDistance = Infinity;
+}
+
+/**
+ * Compares two memory nodes, returning true if the first is "better" than the second.
+ */
+function memoryNodeBetter (firstNode, secondNode)
+{
+    if (!firstNode) {
+        return false;
+    }
+    if (!secondNode) {
+        return true;
+    }
+    if (firstNode.rewardDistance < secondNode.rewardDistance) {
+        return true;
+    }
+    if (firstNode.rewardDistance > secondNode.rewardDistance) {
+        return false;
+    }
+    return firstNode.lastVisited <= secondNode.lastVisited;
+}
+
+
+/**
+ * Constructs the agent.
+ */
+function Agent ()
+{
+    this.resetPosition();
     
     // initialize "memory" and visit counts
     this.memory = [];
     this.counts = [];
     for (var yy = 0; yy < cellHeight; yy++) {
         for (var xx = 0; xx < cellWidth; xx++) {
-            this.memory.push(0);
+            this.memory.push(new MemoryNode());
             this.counts.push(0);
         }
     }
-    this.memory[this.y * cellWidth + this.x] = new Date().getTime();
+    this.memory[this.y * cellWidth + this.x].lastVisited = clock;
     this.counts[this.y * cellWidth + this.x] = 1;
 }
 
@@ -86,34 +149,109 @@ function Agent ()
  */
 Agent.prototype.tick = function ()
 {
+    this.clear();
+    
     // figure out which directions we can travel in and when we last visited
     var up = (wallFlags[this.y * wallStride + this.x] & Y_WALL_FLAG) ?
-        Infinity : this.memory[(this.y - 1) * cellWidth + this.x];
+        null : this.memory[(this.y - 1) * cellWidth + this.x];
     var left = (wallFlags[this.y * wallStride + this.x] & X_WALL_FLAG) ?
-        Infinity : this.memory[this.y * cellWidth + (this.x - 1)];
+        null : this.memory[this.y * cellWidth + (this.x - 1)];
     var down = (wallFlags[(this.y + 1) * wallStride + this.x] & Y_WALL_FLAG) ?
-        Infinity : this.memory[(this.y + 1) * cellWidth + this.x];
+        null : this.memory[(this.y + 1) * cellWidth + this.x];
     var right = (wallFlags[this.y * wallStride + (this.x + 1)] & X_WALL_FLAG) ?
-        Infinity : this.memory[this.y * cellWidth + (this.x + 1)];
+        null : this.memory[this.y * cellWidth + (this.x + 1)];
     
-    // go in the direction of the least recently visited accessible location
-    if (up <= left && up <= down && up <= right) {
+    // go in the direction of the "best" location
+    if (memoryNodeBetter(up, left) && memoryNodeBetter(up, down) && memoryNodeBetter(up, right)) {
         this.y -= 1;
         
-    } else if (left <= up && left <= down && left <= right) {
+    } else if (memoryNodeBetter(left, up) && memoryNodeBetter(left, down) && memoryNodeBetter(left, right)) {
         this.x -= 1;
         
-    } else if (down <= up && down <= left && down <= right) {
+    } else if (memoryNodeBetter(down, up) && memoryNodeBetter(down, left) && memoryNodeBetter(down, right)) {
         this.y += 1;
         
-    } else if (right <= up && right <= left && right <= down) {
+    } else if (memoryNodeBetter(right, up) && memoryNodeBetter(right, left) && memoryNodeBetter(right, down)) {
         this.x += 1;
     } 
     
+    // update the path
+    this.path.push({ x: this.x, y: this.y });
+    
     // note the time in our memory, increment visit count
-    this.memory[this.y * cellWidth + this.x] = new Date().getTime();
+    this.memory[this.y * cellWidth + this.x].lastVisited = clock;
     this.counts[this.y * cellWidth + this.x]++;
+    
+    // if we didn't hit the goal, just render
+    if (this.x != goal.x || this.y != goal.y) {
+        this.render();
+        return;
+    }
+    
+    // update expected reward in memory
+    if (pathReinforcement) {
+        for (var ii = this.path.length - 1; ii >= 0; ii--) {
+            var location = this.path[ii];
+            var node = this.memory[location.y * cellWidth + location.x];
+            node.rewardDistance = Math.min(node.rewardDistance, this.path.length - 1 - ii);
+        }
+    } else {
+        this.updateRewardDistances(this.x, this.y, 0);
+    }
+    
+    // clear, rerender the goal
+    this.clear();
+    goal.render();
+    
+    // reset our position
+    this.resetPosition();
+    
+    this.render();
 };
+
+/**
+ * Recursively updates the reward distances in the agent's memory.
+ */
+Agent.prototype.updateRewardDistances = function (x, y, distance)
+{
+    // only update nodes that we haven't updated on this clock cycle
+    var node = this.memory[y * cellWidth + x];
+    if (node.rewardUpdateVisit == clock) {
+        return;
+    }
+    node.rewardUpdateVisit = clock;
+    node.rewardDistance = Math.min(node.rewardDistance, distance);
+    
+    // visit the connected nodes that we have visited and know to be reachable
+    if (!(wallFlags[y * wallStride + x] & Y_WALL_FLAG) && this.memory[(y - 1) * cellWidth + x].lastVisited != 0) {
+        this.updateRewardDistances(x, y - 1, distance + 1);
+    }
+    if (!(wallFlags[y * wallStride + x] & X_WALL_FLAG) && this.memory[y * cellWidth + (x - 1)].lastVisited != 0) {
+        this.updateRewardDistances(x - 1, y, distance + 1);
+    }
+    if (!(wallFlags[(y + 1) * wallStride + x] & Y_WALL_FLAG) && this.memory[(y + 1) * cellWidth + x].lastVisited != 0) {
+        this.updateRewardDistances(x, y + 1, distance + 1);
+    }
+    if (!(wallFlags[y * wallStride + (x + 1)] & X_WALL_FLAG) && this.memory[y * cellWidth + (x + 1)].lastVisited != 0) {
+        this.updateRewardDistances(x + 1, y, distance + 1);
+    }
+};
+
+/**
+ * Resets the agent's position.
+ */
+Agent.prototype.resetPosition = function ()
+{
+    // position randomly (but not right on top of the goal)
+    do {
+        this.x = Math.floor(Math.random() * cellWidth);
+        this.y = Math.floor(Math.random() * cellHeight);
+    
+    } while (this.x == goal.x && this.y == goal.y);
+    
+    // (re)initialize the path
+    this.path = [ { x: this.x, y: this.y } ];
+}
 
 /**
  * Clears the location occupied by the agent.
@@ -148,7 +286,7 @@ Agent.prototype.render = function ()
 /**
  * Initializes the base bits.
  */
-function baseInit ()
+function init ()
 {
     canvas = document.getElementById("canvas");
     ctx = canvas.getContext("2d");
@@ -158,18 +296,26 @@ function baseInit ()
     if (!startButton) {
         controls.innerHTML =
             "<button id='start' onclick='start()'>Start</button>" +
-            "<button onclick='init()'>Reset</button>" +
+            "&nbsp;<button onclick='init()'>Reset</button>" +
             "&nbsp;&nbsp; Delay: <select id='delay'>" +
                 "<option value='200'>200 ms</option>" +
                 "<option value='100'>100 ms</option>" +
                 "<option value='30' selected='true'>30 ms</option>" +
                 "<option value='10'>10 ms</option>" +
                 "<option value='1'>1 ms</option>" +
+            "</select>" +
+            "&nbsp;&nbsp; Reinforcement: <select id='reinforcement'>" +
+                "<option value='path' selected='true'>Path</option>" +
+                "<option value='distance'>Distance</option>" +
             "</select>";
         startButton = document.getElementById("start");
         delay = 30;
         document.getElementById("delay").onchange = function (event) {
             delay = parseInt(event.target.options[event.target.selectedIndex].value);
+        };
+        pathReinforcement = true;
+        document.getElementById("reinforcement").onchange = function (event) {
+            pathReinforcement = (event.target.options[event.target.selectedIndex].value == "path");
         };
     }
     
@@ -256,22 +402,27 @@ function baseInit ()
     
     // clear and draw the walls
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.beginPath();
     for (var yy = 0, ii = 0; yy <= cellHeight; yy++) {
         for (var xx = 0; xx <= cellWidth; xx++, ii++) {
             if (wallFlags[ii] & X_WALL_FLAG) {
-                ctx.beginPath();
                 ctx.moveTo(xx * CELL_SIZE, yy * CELL_SIZE);
                 ctx.lineTo(xx * CELL_SIZE, yy * CELL_SIZE + CELL_SIZE);
-                ctx.stroke();
             }
             if (wallFlags[ii] & Y_WALL_FLAG) {
-                ctx.beginPath();
                 ctx.moveTo(xx * CELL_SIZE, yy * CELL_SIZE);
                 ctx.lineTo(xx * CELL_SIZE + CELL_SIZE, yy * CELL_SIZE);
-                ctx.stroke();
             }
         }
     }
+    ctx.stroke();
+    
+    // reset the clock
+    clock = 0;
+    
+    // create and render the goal
+    goal = new Goal();
+    goal.render();
     
     // create and render the agent
     agent = new Agent();
@@ -309,9 +460,11 @@ function pause ()
  */
 function tick ()
 {
-    agent.clear();
+    // update the clock
+    clock++;
+    
+    // and the agent
     agent.tick();
-    agent.render();
 
     // schedule the next tick
     tickTimeout = window.setTimeout(tick, delay);
