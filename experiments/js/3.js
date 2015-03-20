@@ -122,19 +122,17 @@ function memoryNodeBetter (firstNode, secondNode)
 }
 
 
+/** The bias input. */
+var BIAS_INPUT = 0;
+
 /** The available directions of motion. */
 var UP = 0, LEFT = 1, RIGHT = 2, DOWN = 3;
 
 /** The number of available directions. */
 var DIRECTION_COUNT = 4;
 
-/**
- * Creates a hash key that represents the action of moving in the specified direction from the specified position.
- */
-function createInputKey (x, y, direction)
-{
-    return String.fromCharCode(y * cellWidth + x, cellHeight * cellWidth + direction);
-}
+/** The number of fixed inputs (includes the always-on "bias"). */
+var FIXED_INPUT_COUNT = DIRECTION_COUNT + 1;
 
 
 /**
@@ -146,6 +144,9 @@ function Agent ()
     
     // initialize the memory node hash
     this.memory = {};
+    
+    // initialize the input weights
+    this.weights = [];
     
     // initialize visit counts
     this.counts = [];
@@ -165,12 +166,14 @@ Agent.prototype.tick = function ()
     this.clear();
     
     // enumerate the direction options, look them up in memory, determine the "best" option
-    var directionKeys = [];
+    var inputKeys = [];
+    var predictedOutputKeys = [];
     var directionMemory = [];
     var bestDirection = Math.floor(DIRECTION_COUNT * Math.random());
     for (var ii = 0; ii < DIRECTION_COUNT; ii++) {
-        directionKeys[ii] = createInputKey(this.x, this.y, ii);
-        directionMemory[ii] = this.memory[directionKeys[ii]];
+        inputKeys[ii] = this.createInputKey(ii);
+        predictedOutputKeys[ii] = this.createPredictedOutputKey(inputKeys[ii]);
+        directionMemory[ii] = this.memory[inputKeys[ii]];
         if (memoryNodeBetter(directionMemory[ii], directionMemory[bestDirection])) {
             bestDirection = ii;
         }
@@ -211,9 +214,13 @@ Agent.prototype.tick = function ()
             break;
     }
     
+    // generate the actual output key and use it to update the weights
+    var actualOutputKey = this.createActualOutputKey();
+    this.updateWeights(inputKeys[bestDirection], predictedOutputKeys[bestDirection], actualOutputKey);
+    
     // note the time in our memory, increment visit count
     if (!directionMemory[bestDirection]) {
-        this.memory[directionKeys[bestDirection]] = directionMemory[bestDirection] = new MemoryNode();
+        this.memory[inputKeys[bestDirection]] = directionMemory[bestDirection] = new MemoryNode();
     }
     directionMemory[bestDirection].lastVisited = clock;
     this.counts[this.y * cellWidth + this.x]++;
@@ -235,6 +242,91 @@ Agent.prototype.tick = function ()
 };
 
 /**
+ * Creates a hash key that represents the action of moving in the specified direction from the current position.
+ */
+Agent.prototype.createInputKey = function (direction)
+{
+    return String.fromCharCode(BIAS_INPUT, 1 + direction, FIXED_INPUT_COUNT + this.y * cellWidth + this.x);
+};
+
+/**
+ * Given an input key, computes and returns the predicted output key based on the weights.
+ */
+Agent.prototype.createPredictedOutputKey = function (inputKey)
+{
+    var outputTotals = [];
+    for (var ii = 0; ii < inputKey.length; ii++) {
+        var input = inputKey.charCodeAt(ii);
+        var weights = this.weights[input];
+        if (!weights) {
+            continue;
+        }
+        for (var weight in weights) {
+            if (outputTotals[weight]) {
+                outputTotals[weight] += weights[weight];
+            } else {
+                outputTotals[weight] = weights[weight];
+            }
+        }
+    }
+    var outputKey = "";
+    for (var output in outputTotals) {
+        if (outputTotals[output] > 0.0) {
+            outputKey += String.fromCharCode(output);
+        }
+    }
+    return outputKey;
+};
+
+/**
+ * Generates the actual output key based on the current state.
+ */
+Agent.prototype.createActualOutputKey = function ()
+{
+    return String.fromCharCode(this.y * cellWidth + this.x);
+};
+
+/**
+ * Updates the agents' weights based on input key, predicted output key, actual output key.
+ */
+Agent.prototype.updateWeights = function (inputKey, predictedOutputKey, actualOutputKey)
+{
+    // look for values predicted to be set that are not set
+    for (var ii = 0; ii < predictedOutputKey.length; ii++) {
+        if (actualOutputKey.indexOf(predictedOutputKey.charAt(ii)) == -1) {
+            this.adjustWeights(inputKey, predictedOutputKey.charCodeAt(ii), -1);
+        }
+    }
+    
+    // look for values set that were not predicted to be set
+    for (var ii = 0; ii < actualOutputKey.length; ii++) {
+        if (predictedOutputKey.indexOf(actualOutputKey.charAt(ii)) == -1) {
+            this.adjustWeights(inputKey, actualOutputKey.charCodeAt(ii), 1);
+        }      
+    }
+};
+
+/**
+ * Adjusts weights for the specified input key and output by the given amount.
+ */
+Agent.prototype.adjustWeights = function (inputKey, output, amount)
+{
+    for (var ii = 0; ii < inputKey.length; ii++) {
+        var weights = this.weights[inputKey.charCodeAt(ii)];
+        if (!weights) {
+            this.weights[inputKey.charCodeAt(ii)] = weights = [];
+        }
+        if (weights[output]) {
+            if ((weights[output] += amount) == 0) {
+                delete weights[output];
+            }
+        } else {
+            weights[output] = amount;
+        }
+    }
+};
+
+/**
  * Resets the agent's position.
  */
 Agent.prototype.resetPosition = function ()
@@ -248,7 +340,7 @@ Agent.prototype.resetPosition = function ()
     
     // (re)initialize the path
     this.path = [ { x: this.x, y: this.y } ];
-}
+};
 
 /**
  * Clears the location occupied by the agent.
