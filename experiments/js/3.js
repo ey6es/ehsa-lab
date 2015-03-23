@@ -131,6 +131,12 @@ var UP = 0, LEFT = 1, RIGHT = 2, DOWN = 3;
 /** The number of available directions. */
 var DIRECTION_COUNT = 4;
 
+/** X offsets for each direction. */
+var DIRECTION_X = [ 0, -1, 1, 0 ];
+
+/** Y offsets for each direction. */
+var DIRECTION_Y = [ -1, 0, 0, 1 ];
+
 /** The number of fixed inputs (includes the always-on "bias"). */
 var FIXED_INPUT_COUNT = DIRECTION_COUNT + 1;
 
@@ -270,10 +276,20 @@ Agent.prototype.createPredictedOutputKey = function (inputKey)
         }
     }
     var outputKey = "";
+    var highestPositionTotal = -Infinity;
+    var highestPosition = undefined;
     for (var output in outputTotals) {
-        if (outputTotals[output] > 0.0) {
+        if (output < cellWidth * cellHeight) {
+            if (outputTotals[output] > highestPositionTotal) {
+                highestPositionTotal = outputTotals[output];
+                highestPosition = output;
+            }
+        } else if (outputTotals[output] > 0.0) {
             outputKey += String.fromCharCode(output);
         }
+    }
+    if (highestPosition != undefined) {
+        outputKey += String.fromCharCode(highestPosition);
     }
     return outputKey;
 };
@@ -306,6 +322,8 @@ Agent.prototype.updateWeights = function (inputKey, predictedOutputKey, actualOu
     }
 };
 
+var LEARNING_RATE = 0.01;
+
 /**
  * Adjusts weights for the specified input key and output by the given amount.
  */
@@ -317,7 +335,7 @@ Agent.prototype.adjustWeights = function (inputKey, output, amount)
             this.weights[inputKey.charCodeAt(ii)] = weights = [];
         }
         if (weights[output]) {
-            if ((weights[output] += amount) == 0) {
+            if ((weights[output] += LEARNING_RATE * amount) == 0) {
                 delete weights[output];
             }
         } else {
@@ -362,13 +380,56 @@ Agent.prototype.clear = function ()
 };
 
 /**
+ * Returns the x coordinate of the given output key.
+ */
+function getOutputKeyX (outputKey)
+{
+    for (var ii = 0; ii < outputKey.length; ii++) {
+        if (outputKey.charCodeAt(ii) < cellWidth * cellHeight) {
+            return Math.floor(outputKey.charCodeAt(ii) % cellWidth);
+        }
+    }
+    return undefined;
+}
+
+/**
+ * Returns the y coordinate of the given output key.
+ */
+function getOutputKeyY (outputKey)
+{
+    for (var ii = 0; ii < outputKey.length; ii++) {
+        if (outputKey.charCodeAt(ii) < cellWidth * cellHeight) {
+            return Math.floor(outputKey.charCodeAt(ii) / cellWidth);
+        }
+    }
+    return undefined;
+}
+
+/**
  * Renders the agent.
  */
 Agent.prototype.render = function ()
 {
     ctx.beginPath();
     ctx.arc((this.x + 0.5) * CELL_SIZE, (this.y + 0.5) * CELL_SIZE, CELL_SIZE * 0.25, 0.0, Math.PI * 2.0);
-    ctx.fill();    
+    ctx.fill();
+    
+    ctx.beginPath();
+    for (var ii = 0; ii < DIRECTION_COUNT; ii++) {
+        var predictedOutputKey = this.createPredictedOutputKey(this.createInputKey(ii));
+        var predictedX = getOutputKeyX(predictedOutputKey);
+        var predictedY = getOutputKeyY(predictedOutputKey);
+        if (predictedX != undefined && predictedY != undefined && (predictedX != this.x || predictedY != this.y)) {
+            if (predictedX - this.x == DIRECTION_X[ii] && predictedY - this.y == DIRECTION_Y[ii]) {
+                ctx.moveTo((this.x + 0.5) * CELL_SIZE, (this.y + 0.5) * CELL_SIZE);
+                ctx.lineTo((this.x + 0.5 + DIRECTION_X[ii] * 0.4) * CELL_SIZE,
+                    (this.y + 0.5 + DIRECTION_Y[ii] * 0.4) * CELL_SIZE);
+            } else {
+                //ctx.fillRect(predictedX * CELL_SIZE, predictedY * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+            }
+        }
+    }
+    ctx.stroke();
 };
 
 
