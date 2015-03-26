@@ -22,9 +22,6 @@ var delay;
 /** The tick timeout. */
 var tickTimeout;
 
-/** The value of the clock. */
-var clock;
-
 /** The size of the grid cells. */
 var CELL_SIZE = 15;
 
@@ -96,9 +93,8 @@ Goal.prototype.render = function ()
  */
 function MemoryNode ()
 {
-    this.lastVisited = clock;
+    this.lastVisited = 0;
     this.rewardDistance = Infinity;
-    this.weights = {};
 }
 
 /**
@@ -118,7 +114,7 @@ function memoryNodeBetter (firstNode, secondNode)
     if (firstNode.rewardDistance > secondNode.rewardDistance) {
         return false;
     }
-    return firstNode.lastVisited <= secondNode.lastVisited;
+    return firstNode.lastVisited < secondNode.lastVisited;
 }
 
 
@@ -137,6 +133,9 @@ var DIRECTION_X = [ 0, -1, 1, 0 ];
 /** Y offsets for each direction. */
 var DIRECTION_Y = [ -1, 0, 0, 1 ];
 
+/** Opposites for each direction. */
+var DIRECTION_OPPOSITE = [ DOWN, RIGHT, LEFT, UP ];
+
 /** The number of fixed inputs (includes the always-on "bias"). */
 var FIXED_INPUT_COUNT = DIRECTION_COUNT + 1;
 
@@ -151,7 +150,7 @@ function Agent ()
     // initialize the memory node hash
     this.memory = {};
     
-    // initialize the input weights
+    // initialize the input weights, reverse weights
     this.weights = [];
     
     // initialize visit counts
@@ -162,6 +161,9 @@ function Agent ()
         }
     }
     this.counts[this.y * cellWidth + this.x] = 1;
+    
+    // initialize the clock
+    this.clock = 0;
 }
 
 /**
@@ -175,15 +177,20 @@ Agent.prototype.tick = function ()
     var inputKeys = [];
     var predictedOutputKeys = [];
     var directionMemory = [];
-    var bestDirection = Math.floor(DIRECTION_COUNT * Math.random());
+    var startDirection = Math.floor(DIRECTION_COUNT * Math.random());
+    var bestDirection = -1;
     for (var ii = 0; ii < DIRECTION_COUNT; ii++) {
-        inputKeys[ii] = this.createInputKey(ii);
-        predictedOutputKeys[ii] = this.createPredictedOutputKey(inputKeys[ii]);
-        directionMemory[ii] = this.memory[inputKeys[ii]];
-        if (memoryNodeBetter(directionMemory[ii], directionMemory[bestDirection])) {
-            bestDirection = ii;
+        var direction = (startDirection + ii) % DIRECTION_COUNT;
+        inputKeys[direction] = this.createInputKey(direction);
+        predictedOutputKeys[direction] = this.createPredictedOutputKey(inputKeys[direction]);
+        directionMemory[direction] = this.memory[inputKeys[direction]];
+        if (bestDirection == -1 || (memoryNodeBetter(directionMemory[direction], directionMemory[bestDirection]))) {
+            bestDirection = direction;
         }
     }
+    
+    // remember where we were before the update
+    var originalX = this.x, originalY = this.y;
     
     // attempt to move in the desired direction, thickening the wall if unable
     switch (bestDirection) {
@@ -224,17 +231,40 @@ Agent.prototype.tick = function ()
     var actualOutputKey = this.createActualOutputKey();
     this.updateWeights(inputKeys[bestDirection], predictedOutputKeys[bestDirection], actualOutputKey);
     
+    // when we actually move, we need to mark the previous location as visited so that we backtrack last
+    // (ideally, this should be learned)
+    if (this.x != originalX || this.y != originalY) {
+        var oppositeInputKey = this.createInputKey(DIRECTION_OPPOSITE[bestDirection]);
+        var oppositeMemory = this.memory[oppositeInputKey];
+        if (!oppositeMemory) {
+            this.memory[oppositeInputKey] = oppositeMemory = new MemoryNode();
+        }
+        oppositeMemory.lastVisited = this.clock;
+    }
+    
     // note the time in our memory, increment visit count
     if (!directionMemory[bestDirection]) {
         this.memory[inputKeys[bestDirection]] = directionMemory[bestDirection] = new MemoryNode();
     }
-    directionMemory[bestDirection].lastVisited = clock;
+    directionMemory[bestDirection].lastVisited = this.clock;
     this.counts[this.y * cellWidth + this.x]++;
+    
+    // update the path
+    this.path.push(directionMemory[bestDirection]);
+    
+    // increment the clock
+    this.clock++;
     
     // if we didn't hit the goal, just render
     if (this.x != goal.x || this.y != goal.y) {
         this.render();
         return;
+    }
+    
+    // update expected reward in memory
+    for (var ii = this.path.length - 1; ii >= 0; ii--) {
+        var node = this.path[ii];
+        node.rewardDistance = Math.min(node.rewardDistance, this.path.length - 1 - ii);
     }
     
     // clear, rerender the goal
@@ -330,9 +360,10 @@ var LEARNING_RATE = 0.01;
 Agent.prototype.adjustWeights = function (inputKey, output, amount)
 {
     for (var ii = 0; ii < inputKey.length; ii++) {
-        var weights = this.weights[inputKey.charCodeAt(ii)];
+        var input = inputKey.charCodeAt(ii);
+        var weights = this.weights[input];
         if (!weights) {
-            this.weights[inputKey.charCodeAt(ii)] = weights = [];
+            this.weights[input] = weights = [];
         }
         if (weights[output]) {
             if ((weights[output] += LEARNING_RATE * amount) == 0) {
@@ -357,7 +388,7 @@ Agent.prototype.resetPosition = function ()
     } while (this.x == goal.x && this.y == goal.y);
     
     // (re)initialize the path
-    this.path = [ { x: this.x, y: this.y } ];
+    this.path = [];
 };
 
 /**
@@ -419,14 +450,11 @@ Agent.prototype.render = function ()
         var predictedOutputKey = this.createPredictedOutputKey(this.createInputKey(ii));
         var predictedX = getOutputKeyX(predictedOutputKey);
         var predictedY = getOutputKeyY(predictedOutputKey);
-        if (predictedX != undefined && predictedY != undefined && (predictedX != this.x || predictedY != this.y)) {
-            if (predictedX - this.x == DIRECTION_X[ii] && predictedY - this.y == DIRECTION_Y[ii]) {
-                ctx.moveTo((this.x + 0.5) * CELL_SIZE, (this.y + 0.5) * CELL_SIZE);
-                ctx.lineTo((this.x + 0.5 + DIRECTION_X[ii] * 0.4) * CELL_SIZE,
-                    (this.y + 0.5 + DIRECTION_Y[ii] * 0.4) * CELL_SIZE);
-            } else {
-                //ctx.fillRect(predictedX * CELL_SIZE, predictedY * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-            }
+        if (predictedX != undefined && predictedY != undefined && predictedX - this.x == DIRECTION_X[ii] &&
+                predictedY - this.y == DIRECTION_Y[ii]) {
+            ctx.moveTo((this.x + 0.5) * CELL_SIZE, (this.y + 0.5) * CELL_SIZE);
+            ctx.lineTo((this.x + 0.5 + DIRECTION_X[ii] * 0.4) * CELL_SIZE,
+                (this.y + 0.5 + DIRECTION_Y[ii] * 0.4) * CELL_SIZE);
         }
     }
     ctx.stroke();
@@ -559,9 +587,6 @@ function init ()
     }
     ctx.stroke();
     
-    // reset the clock
-    clock = 0;
-    
     // create and render the goal
     goal = new Goal();
     goal.render();
@@ -602,9 +627,6 @@ function pause ()
  */
 function tick ()
 {
-    // update the clock
-    clock++;
-    
     // and the agent
     agent.tick();
 
